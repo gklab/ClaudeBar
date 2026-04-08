@@ -35,6 +35,7 @@ final class UsageStore {
     private let cache: UsageCache
     private let settings: SettingsStore
     private var localTimer: Timer?
+    private var apiTimer: Timer?
 
     private static let cal5hKey = "claudebar_cost_per_percent_5h"
     private static let cal7dKey = "claudebar_cost_per_percent_7d"
@@ -155,17 +156,26 @@ final class UsageStore {
         refreshAPI()
         startFullScan()
 
+        // Local JSONL: every 30s
         localTimer?.invalidate()
         localTimer = Timer.scheduledTimer(
             withTimeInterval: Double(settings.refreshIntervalSeconds), repeats: true
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshIncremental() }
         }
+
+        // API: every 5 minutes
+        apiTimer?.invalidate()
+        apiTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshAPI() }
+        }
     }
 
     func stopAutoRefresh() {
         localTimer?.invalidate()
         localTimer = nil
+        apiTimer?.invalidate()
+        apiTimer = nil
     }
 
     func refresh() {
