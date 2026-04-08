@@ -11,6 +11,4 @@
   <rect x="190" y="200" width="60" height="220" rx="8" fill="white" opacity="0.9"/>
   <rect x="280" y="140" width="60" height="280" rx="8" fill="white" opacity="0.9"/>
   <rect x="370" y="100" width="60" height="320" rx="8" fill="white" opacity="0.9"/>
-  <!-- Percentage text -->
-  <text x="256" y="80" text-anchor="middle" font-family="SF Pro,Helvetica" font-size="48" font-weight="bold" fill="white" opacity="0.8">%</text>
 </svg>
