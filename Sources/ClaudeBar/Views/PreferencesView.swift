@@ -100,7 +100,7 @@ struct PreferencesView: View {
             Text("ClaudeBar")
                 .font(.title2.weight(.semibold))
 
-            Text("v1.0.0")
+            Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
                 .foregroundStyle(.secondary)
 
             Text("macOS menu bar utility for monitoring\nClaude Code usage and costs.")
