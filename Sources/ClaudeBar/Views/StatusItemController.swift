@@ -121,17 +121,17 @@ final class StatusItemController: NSObject {
         // ── Actions ──
         menu.addItem(NSMenuItem.separator())
 
-        let historyItem = NSMenuItem(title: "Daily History...", action: #selector(historyAction), keyEquivalent: "h")
+        let historyItem = NSMenuItem(title: "Daily History...", action: #selector(historyAction), keyEquivalent: "")
         historyItem.target = self
         menu.addItem(historyItem)
 
-        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(preferencesAction), keyEquivalent: ",")
+        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(preferencesAction), keyEquivalent: "")
         prefsItem.target = self
         menu.addItem(prefsItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "Quit ClaudeBar", action: #selector(quitAction), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit ClaudeBar", action: #selector(quitAction), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(quitItem)
     }
