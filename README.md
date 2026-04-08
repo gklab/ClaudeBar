@@ -30,7 +30,9 @@ ClaudeBar sits in your macOS menu bar and gives you a real-time view of your Cla
 
 - **Real-time usage monitoring** - 5-hour and 7-day rate limit windows with progress bars and reset countdowns
 - **Auto-detect plan** - Reads your subscription type (Pro / Max 5x / Max 20x) from macOS Keychain
+- **User profile** - Displays your account name from Claude's profile API
 - **Token breakdown** - Input, Output, Cache Read/Write per session with model detection (Opus, Sonnet, Haiku)
+- **Sonnet tracking** - Separate 7-day Sonnet utilization window when active
 - **Extra Usage tracking** - Monitor your pay-as-you-go spending against your monthly limit
 - **Daily History** - Browse usage across 24 Hours, Daily, and Monthly views with full token and cost breakdowns
 - **Offline estimation** - When API is unavailable, estimates usage from local data using cost-based calibration
@@ -60,21 +62,14 @@ swift build -c release
 
 | Data Source | What | Frequency |
 |-------------|------|-----------|
-| **Claude OAuth API** | 5h/7d utilization %, reset times, extra usage | On launch |
+| **Claude OAuth API** | 5h/7d utilization %, reset times, extra usage, profile | On launch + every 5 min |
 | **Local JSONL files** | Token breakdown (input/output/cache), cost estimates | Every 30s |
 | **macOS Keychain** | Subscription plan, access token | On launch |
 
-- The API is only called once at startup to avoid rate limits
+- The API is called at startup and refreshed every 5 minutes using ephemeral sessions to avoid rate limits
 - Between API calls, usage is estimated locally using a cost-based calibration factor
 - Historical data is cached to disk (`~/.claude/claudebar-cache.json`) for instant startup
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Cmd + H` | Open Daily History |
-| `Cmd + ,` | Preferences |
-| `Cmd + Q` | Quit |
+- Cost shown is the equivalent API cost (what you would pay without a subscription)
 
 ## License
 
