@@ -11,9 +11,14 @@ final class UsageStore {
     private(set) var fiveHourResetsAt: Date?
     private(set) var sevenDayPercent: Double = 0
     private(set) var sevenDayResetsAt: Date?
+    private(set) var sevenDaySonnetPercent: Double = 0
+    private(set) var sevenDaySonnetResetsAt: Date?
     private(set) var extraUsage: UsageAPI.ExtraUsage?
     private(set) var apiError: String?
     private(set) var lastAPIUpdate: Date?
+
+    // Profile (persisted)
+    private(set) var displayName: String = ""
 
     // Cached aggregated data (derived from UsageCache, updated on refresh)
     private(set) var entries: [UsageEntry] = []
@@ -35,6 +40,7 @@ final class UsageStore {
     private static let cal7dKey = "claudebar_cost_per_percent_7d"
     private static let reset5hKey = "claudebar_last_reset_5h"
     private static let reset7dKey = "claudebar_last_reset_7d"
+    private static let displayNameKey = "claudebar_display_name"
 
     private var costPerPercent5h: Double {
         get { UserDefaults.standard.double(forKey: Self.cal5hKey) }
@@ -60,6 +66,9 @@ final class UsageStore {
         self.settings = settings
         let path = NSString(string: settings.dataPath).expandingTildeInPath
         let reader = UsageReader(dataPath: URL(fileURLWithPath: path))
+
+        // Restore persisted profile
+        self.displayName = UserDefaults.standard.string(forKey: Self.displayNameKey) ?? ""
         self.cache = UsageCache(reader: reader)
 
         // Restore reset times
@@ -168,6 +177,7 @@ final class UsageStore {
 
     private func refreshAPI() {
         Task {
+            // Fetch usage
             if let usage = await UsageAPI.fetchUsage() {
                 let pct5 = usage.fiveHour?.utilization ?? 0
                 fiveHourPercent = pct5
@@ -175,6 +185,8 @@ final class UsageStore {
                 let pct7 = usage.sevenDay?.utilization ?? 0
                 sevenDayPercent = pct7
                 sevenDayResetsAt = usage.sevenDay?.resetsAt
+                sevenDaySonnetPercent = usage.sevenDaySonnet?.utilization ?? 0
+                sevenDaySonnetResetsAt = usage.sevenDaySonnet?.resetsAt
                 extraUsage = usage.extraUsage
                 lastAPIUpdate = Date()
                 apiError = nil
@@ -188,13 +200,17 @@ final class UsageStore {
                 if pct5 > 1 && io5 > 0.01 { costPerPercent5h = io5 / pct5 }
                 let io7 = sevenDayIOCost
                 if pct7 > 1 && io7 > 0.01 { costPerPercent7d = io7 / pct7 }
-
-                // API percentages logged only at debug level
             } else {
                 apiError = "API unavailable"
                 if is5hExpired, let s = savedResetAt5h { fiveHourResetsAt = Self.projectReset(from: s, period: Self.window5h) }
                 if is7dExpired, let s = savedResetAt7d { sevenDayResetsAt = Self.projectReset(from: s, period: Self.window7d) }
                 estimateFromLocal()
+            }
+
+            // Fetch profile (separate call, OK if it fails)
+            if let profile = await UsageAPI.fetchProfile() {
+                displayName = profile.displayName
+                UserDefaults.standard.set(profile.displayName, forKey: Self.displayNameKey)
             }
         }
     }

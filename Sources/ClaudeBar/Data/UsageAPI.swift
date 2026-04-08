@@ -1,11 +1,10 @@
 import Foundation
 
-/// Fetches real-time usage data from Claude's OAuth API.
-/// Returns the official utilization percentages directly from Anthropic.
+/// Fetches real-time usage data and profile from Claude's OAuth API.
 struct UsageAPI: Sendable {
     struct UsageData: Sendable {
         struct Window: Sendable {
-            let utilization: Double  // 0-100 percent
+            let utilization: Double
             let resetsAt: Date?
         }
         let fiveHour: Window?
@@ -22,49 +21,71 @@ struct UsageAPI: Sendable {
         let utilization: Double
     }
 
-    /// Fetch usage from Claude API using the OAuth access token from Keychain.
-    static func fetchUsage() async -> UsageData? {
-        guard let creds = KeychainReader.readCredentials(),
-              !creds.accessToken.isEmpty
-        else {
-            NSLog("[ClaudeBar] No access token for API")
-            return nil
-        }
+    struct ProfileData: Sendable {
+        let displayName: String
+        let email: String
+        let organizationType: String
+        let billingType: String
+        let rateLimitTier: String
+        let subscriptionStatus: String
+    }
 
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
+    // MARK: - Shared
 
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("ClaudeBar/1.0", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 10
-
-        // Use ephemeral session — no connection reuse, no cookies, avoids session-level rate limits
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.urlCache = nil
-        let session = URLSession(configuration: config)
+        return URLSession(configuration: config)
+    }
+
+    private static func makeRequest(path: String, token: String) -> URLRequest? {
+        guard let url = URL(string: "https://api.anthropic.com\(path)") else { return nil }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        req.setValue("ClaudeBar/1.0", forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 10
+        return req
+    }
+
+    // MARK: - Usage
+
+    static func fetchUsage() async -> UsageData? {
+        guard let creds = KeychainReader.readCredentials(), !creds.accessToken.isEmpty else { return nil }
+        guard let request = makeRequest(path: "/api/oauth/usage", token: creds.accessToken) else { return nil }
+
+        let session = makeSession()
         defer { session.invalidateAndCancel() }
 
         do {
             let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-
-            guard status == 200 else {
-                NSLog("[ClaudeBar] API status: \(status)")
-                return nil
-            }
-
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
-            }
-
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
             return parseUsageResponse(json)
-        } catch {
-            NSLog("[ClaudeBar] API error: \(error.localizedDescription)")
-            return nil
-        }
+        } catch { return nil }
     }
+
+    // MARK: - Profile
+
+    static func fetchProfile() async -> ProfileData? {
+        guard let creds = KeychainReader.readCredentials(), !creds.accessToken.isEmpty else { return nil }
+        guard let request = makeRequest(path: "/api/oauth/profile", token: creds.accessToken) else { return nil }
+
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return parseProfileResponse(json)
+        } catch { return nil }
+    }
+
+    // MARK: - Parse
 
     private static func parseUsageResponse(_ json: [String: Any]) -> UsageData {
         func parseWindow(_ key: String) -> UsageData.Window? {
@@ -72,12 +93,12 @@ struct UsageAPI: Sendable {
             let util = w["utilization"] as? Double ?? 0
             var resetsAt: Date?
             if let rs = w["resets_at"] as? String {
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                resetsAt = formatter.date(from: rs)
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                resetsAt = f.date(from: rs)
                 if resetsAt == nil {
-                    formatter.formatOptions = [.withInternetDateTime]
-                    resetsAt = formatter.date(from: rs)
+                    f.formatOptions = [.withInternetDateTime]
+                    resetsAt = f.date(from: rs)
                 }
             }
             return UsageData.Window(utilization: util, resetsAt: resetsAt)
@@ -99,6 +120,19 @@ struct UsageAPI: Sendable {
             sevenDaySonnet: parseWindow("seven_day_sonnet"),
             sevenDayOpus: parseWindow("seven_day_opus"),
             extraUsage: extraUsage
+        )
+    }
+
+    private static func parseProfileResponse(_ json: [String: Any]) -> ProfileData {
+        let account = json["account"] as? [String: Any] ?? [:]
+        let org = json["organization"] as? [String: Any] ?? [:]
+        return ProfileData(
+            displayName: account["display_name"] as? String ?? "",
+            email: account["email"] as? String ?? "",
+            organizationType: org["organization_type"] as? String ?? "",
+            billingType: org["billing_type"] as? String ?? "",
+            rateLimitTier: org["rate_limit_tier"] as? String ?? "",
+            subscriptionStatus: org["subscription_status"] as? String ?? ""
         )
     }
 }

@@ -47,7 +47,8 @@ final class StatusItemController: NSObject {
             item.isEnabled = false
 
             let header = NSMutableAttributedString()
-            header.append(NSAttributedString(string: "ClaudeBar — \(settings.plan.rawValue)", attributes: [
+            let name = store.displayName.isEmpty ? "ClaudeBar" : store.displayName
+            header.append(NSAttributedString(string: "\(name) — \(settings.plan.rawValue)", attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
             ]))
 
@@ -97,6 +98,15 @@ final class StatusItemController: NSObject {
         addBarItem(menu, label: "\(pct7)%\(est7)", percent: store.weeklyUsagePercent)
         if let resetsAt = store.sevenDayResetsAt {
             addDetailItem(menu, text: "Resets \(formatResetDate(resetsAt))")
+        }
+
+        // ── 7-Day Sonnet (if has usage) ──
+        if store.sevenDaySonnetPercent > 0 {
+            addSectionHeader(menu, title: "7-Day Sonnet")
+            addBarItem(menu, label: "\(Int(store.sevenDaySonnetPercent))%", percent: store.sevenDaySonnetPercent / 100)
+            if let resetsAt = store.sevenDaySonnetResetsAt {
+                addDetailItem(menu, text: "Resets \(formatResetDate(resetsAt))")
+            }
         }
 
         // ── Extra Usage ──
