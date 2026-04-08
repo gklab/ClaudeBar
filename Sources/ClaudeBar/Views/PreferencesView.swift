@@ -111,7 +111,7 @@ struct PreferencesView: View {
             Spacer()
 
             HStack(spacing: 16) {
-                Link("GitHub", destination: URL(string: "https://github.com/anthropics/claude-code")!)
+                Link("GitHub", destination: URL(string: "https://github.com/gklab/ClaudeBar")!)
                     .font(.caption)
             }
             .padding(.bottom, 12)
