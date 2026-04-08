@@ -119,8 +119,8 @@ final class UsageStore {
             cacheCreationTokens: 0, cacheReadTokens: 0) }
     }
 
-    var todayCost: Double { dailyUsage.last?.totalCost ?? 0 }
-    var todayTokens: Int { dailyUsage.last?.totalTokens ?? 0 }
+    var todayCost: Double { dailyUsage.last(where: { Calendar.current.isDateInToday($0.date) })?.totalCost ?? 0 }
+    var todayTokens: Int { dailyUsage.last(where: { Calendar.current.isDateInToday($0.date) })?.totalTokens ?? 0 }
 
     var statusText: String {
         if isLoading && lastUpdated == nil && lastAPIUpdate == nil { return "..." }
@@ -139,8 +139,6 @@ final class UsageStore {
         if isEstimated { return "est." }
         return "no data"
     }
-
-    var activeSession: SessionBlock? { nil }
 
     // MARK: - Lifecycle
 
@@ -191,7 +189,7 @@ final class UsageStore {
                 let io7 = sevenDayIOCost
                 if pct7 > 1 && io7 > 0.01 { costPerPercent7d = io7 / pct7 }
 
-                NSLog("[ClaudeBar] API: 5h=\(pct5)%, 7d=\(pct7)%")
+                // API percentages logged only at debug level
             } else {
                 apiError = "API unavailable"
                 if is5hExpired, let s = savedResetAt5h { fiveHourResetsAt = Self.projectReset(from: s, period: Self.window5h) }

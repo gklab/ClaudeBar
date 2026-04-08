@@ -23,13 +23,6 @@ actor UsageReader {
         self.isoFormatterNoFrac.formatOptions = [.withInternetDateTime]
     }
 
-    /// Progress callback: (filesProcessed, totalFiles).
-    var onProgress: (@Sendable (Int, Int) -> Void)?
-
-    func setProgress(_ callback: @escaping @Sendable (Int, Int) -> Void) {
-        onProgress = callback
-    }
-
     /// Load entries for a specific time window. Files are filtered by mtime.
     func loadEntries(hoursBack: Int) -> [UsageEntry] {
         processedHashes.removeAll()
@@ -38,128 +31,14 @@ actor UsageReader {
         let files = findJSONLFiles(modifiedAfter: cutoff)
         var allEntries: [UsageEntry] = []
 
-        for (i, file) in files.enumerated() {
-            let entries = processFile(file, cutoff: cutoff)
-            allEntries.append(contentsOf: entries)
-            onProgress?(i + 1, files.count)
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-
-        allEntries.sort { $0.timestamp < $1.timestamp }
-        NSLog("[ClaudeBar] Loaded \(allEntries.count) entries from \(files.count) files (last \(hoursBack)h)")
-        return allEntries
-    }
-
-    /// Incrementally load more entries, merging with existing ones.
-    func loadMoreEntries(hoursBack: Int, existingHashes: Set<String>) -> [UsageEntry] {
-        let cutoff = Date().addingTimeInterval(-Double(hoursBack) * 3600)
-        processedHashes = existingHashes
-
-        let files = findJSONLFiles(modifiedAfter: cutoff)
-        var newEntries: [UsageEntry] = []
-
         for file in files {
             let entries = processFile(file, cutoff: cutoff)
-            newEntries.append(contentsOf: entries)
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-
-        newEntries.sort { $0.timestamp < $1.timestamp }
-        return newEntries
-    }
-
-    /// Build session blocks from entries using 5-hour windows.
-    func buildSessionBlocks(from entries: [UsageEntry]) -> [SessionBlock] {
-        guard !entries.isEmpty else { return [] }
-
-        let windowSeconds = Double(ClaudePlan.sessionWindowHours) * 3600
-        var blocks: [SessionBlock] = []
-        var currentEntries: [UsageEntry] = []
-        var blockStart = entries[0].timestamp
-
-        for entry in entries {
-            if entry.timestamp.timeIntervalSince(blockStart) > windowSeconds {
-                if !currentEntries.isEmpty {
-                    blocks.append(makeBlock(entries: currentEntries, start: blockStart, windowSeconds: windowSeconds))
-                }
-                currentEntries = []
-                blockStart = entry.timestamp
-            }
-            currentEntries.append(entry)
-        }
-
-        if !currentEntries.isEmpty {
-            let blockEnd = blockStart.addingTimeInterval(windowSeconds)
-            blocks.append(SessionBlock(
-                id: isoFormatter.string(from: blockStart), startTime: blockStart,
-                endTime: blockEnd, entries: currentEntries, isActive: Date() < blockEnd
-            ))
-        }
-
-        return blocks
-    }
-
-    /// Load ALL entries (no time filter, for full history).
-    func loadAllEntries() -> [UsageEntry] {
-        processedHashes.removeAll()
-        let veryOld = Date.distantPast
-        let files = findJSONLFiles(modifiedAfter: veryOld)
-        NSLog("[ClaudeBar] Loading all: \(files.count) files")
-        var allEntries: [UsageEntry] = []
-        for (i, file) in files.enumerated() {
-            let entries = processFile(file, cutoff: veryOld)
             allEntries.append(contentsOf: entries)
-            onProgress?(i + 1, files.count)
             Thread.sleep(forTimeInterval: 0.05)
         }
+
         allEntries.sort { $0.timestamp < $1.timestamp }
-        NSLog("[ClaudeBar] Loaded all: \(allEntries.count) entries")
         return allEntries
-    }
-
-    /// Build daily usage aggregations.
-    func buildDailyUsage(from entries: [UsageEntry]) -> [DailyUsage] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: entries) { calendar.startOfDay(for: $0.timestamp) }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-
-        return grouped.map { (date, entries) in
-            DailyUsage(id: fmt.string(from: date), date: date,
-                       entries: entries.sorted { $0.timestamp < $1.timestamp })
-        }.sorted { $0.date < $1.date }
-    }
-
-    /// Build hourly usage aggregations.
-    func buildHourlyUsage(from entries: [UsageEntry]) -> [HourlyUsage] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: entries) { entry -> Date in
-            let comps = calendar.dateComponents([.year, .month, .day, .hour], from: entry.timestamp)
-            return calendar.date(from: comps) ?? entry.timestamp
-        }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd HH"
-
-        return grouped.map { (hour, entries) in
-            HourlyUsage(id: fmt.string(from: hour), hour: hour,
-                        entries: entries.sorted { $0.timestamp < $1.timestamp })
-        }.sorted { $0.hour < $1.hour }
-    }
-
-    /// Build monthly usage aggregations.
-    func buildMonthlyUsage(from entries: [UsageEntry]) -> [MonthlyUsage] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: entries) { entry -> Date in
-            let comps = calendar.dateComponents([.year, .month], from: entry.timestamp)
-            return calendar.date(from: comps) ?? entry.timestamp
-        }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM"
-
-        return grouped.map { (month, entries) in
-            MonthlyUsage(id: fmt.string(from: month), month: month,
-                         entries: entries.sorted { $0.timestamp < $1.timestamp })
-        }.sorted { $0.month < $1.month }
     }
 
     // MARK: - Private

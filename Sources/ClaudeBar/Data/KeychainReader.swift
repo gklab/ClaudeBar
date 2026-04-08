@@ -104,7 +104,7 @@ enum KeychainReader {
             expiresAt = Date(timeIntervalSince1970: expiresMs / 1000)
         }
 
-        NSLog("[ClaudeBar] Credentials from \(source): subscription=\(subscriptionType), tier=\(rateLimitTier)")
+        // Credentials loaded successfully
 
         return ClaudeCredentials(
             subscriptionType: subscriptionType,

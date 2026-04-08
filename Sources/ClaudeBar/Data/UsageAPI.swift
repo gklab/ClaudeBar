@@ -36,8 +36,7 @@ struct UsageAPI: Sendable {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        // Mimic Claude Code's User-Agent to blend in
-        request.setValue("claude-code/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("ClaudeBar/1.0", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
 
         // Use ephemeral session — no connection reuse, no cookies, avoids session-level rate limits

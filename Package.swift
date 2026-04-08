@@ -10,6 +10,9 @@ let package = Package(
         .executableTarget(
             name: "ClaudeBar",
             path: "Sources/ClaudeBar",
+            resources: [
+                .process("Resources"),
+            ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
             ]

@@ -18,6 +18,17 @@ actor UsageCache {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = .current; return f
     }()
 
+    private let isoFmt: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private let isoFmtNoFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     var onDataReady: (@Sendable ([UsageEntry], [DailyUsage], [HourlyUsage], [MonthlyUsage]) -> Void)?
     var onProgress: (@Sendable (Int, Int) -> Void)?
 
@@ -54,7 +65,7 @@ actor UsageCache {
         }
 
         let total = filesToScan.count
-        NSLog("[ClaudeBar] Cache: \(allFiles.count) total files, \(total) new/modified to scan")
+        // Scan info: \(allFiles.count) total files, \(total) new/modified
 
         if total == 0 {
             isFullScanDone = true
@@ -91,7 +102,7 @@ actor UsageCache {
         // 4. Save cache to disk
         saveDiskCache()
         isFullScanDone = true
-        NSLog("[ClaudeBar] Cache: scan done, \(dayCache.count) days total")
+        NSLog("[ClaudeBar] Cache ready: \(dayCache.count) days total")
     }
 
     // MARK: - Incremental refresh (every 30s)
@@ -99,7 +110,19 @@ actor UsageCache {
     func refreshRecent() async {
         let entries = await reader.loadEntries(hoursBack: 6)
         let todayKey = dayFmt.string(from: Date())
-        dayCache[todayKey] = entries.filter { dayFmt.string(from: $0.timestamp) == todayKey }
+        let todayEntries = entries.filter { dayFmt.string(from: $0.timestamp) == todayKey }
+
+        // Merge instead of replace — only add/update entries, don't remove existing ones
+        var existing = dayCache[todayKey] ?? []
+        let existingHashes = Set(existing.map { "\($0.messageId):\($0.requestId)" })
+        for entry in todayEntries {
+            let hash = "\(entry.messageId):\(entry.requestId)"
+            if hash != ":" && !existingHashes.contains(hash) {
+                existing.append(entry)
+            }
+        }
+        existing.sort { $0.timestamp < $1.timestamp }
+        dayCache[todayKey] = existing
         rebuildAllEntries()
     }
 
@@ -201,7 +224,7 @@ actor UsageCache {
         let cache = DiskCache(days: days, fileModTimes: fileModTimes)
         if let data = try? JSONEncoder().encode(cache) {
             try? data.write(to: cacheFileURL, options: .atomic)
-            NSLog("[ClaudeBar] Cache: saved \(days.count) days to disk (\(data.count / 1024)KB)")
+            // Cache saved to disk
         }
     }
 
@@ -243,11 +266,6 @@ actor UsageCache {
               let content = String(data: data, encoding: .utf8)
         else { return [] }
 
-        let isoFmt = ISO8601DateFormatter()
-        isoFmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let isoFmtNoFrac = ISO8601DateFormatter()
-        isoFmtNoFrac.formatOptions = [.withInternetDateTime]
-
         var entries: [UsageEntry] = []
         for line in content.components(separatedBy: .newlines) {
             guard line.contains("\"type\":\"assistant\"") || line.contains("\"type\": \"assistant\"") else { continue }
@@ -267,7 +285,7 @@ actor UsageCache {
             let mid = (json["message_id"] as? String) ?? (msg?["id"] as? String) ?? ""
             let rid = (json["requestId"] as? String) ?? (json["request_id"] as? String) ?? ""
             let hash = "\(mid):\(rid)"
-            guard !hash.isEmpty, !processedHashes.contains(hash) else { continue }
+            guard hash != ":", !processedHashes.contains(hash) else { continue }
             processedHashes.insert(hash)
 
             let cc = (usage?["cache_creation_input_tokens"] as? Int) ?? 0

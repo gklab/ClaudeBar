@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import ServiceManagement
 
 /// Persisted user preferences.
 @MainActor
@@ -13,28 +14,36 @@ final class SettingsStore {
         didSet { save() }
     }
 
-    var refreshIntervalSeconds: Int {
-        didSet { save() }
-    }
+    /// Fixed at 30 seconds.
+    let refreshIntervalSeconds: Int = 30
 
-    /// Data directory path (default: ~/.claude/projects).
-    var dataPath: String {
-        didSet { save() }
-    }
+    /// Data directory path.
+    let dataPath: String = "~/.claude/projects"
 
     var tokenLimit: Int {
         plan == .custom ? customTokenLimit : plan.tokenLimit
     }
 
-    var costLimit: Double {
-        plan.costLimit
+    var costLimit: Double { plan.costLimit }
+
+    var launchAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do {
+                if newValue {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                NSLog("[ClaudeBar] Launch at login error: \(error)")
+            }
+        }
     }
 
     private static let defaults = UserDefaults.standard
     private static let planKey = "claudebar_plan"
     private static let customTokenLimitKey = "claudebar_custom_token_limit"
-    private static let refreshIntervalKey = "claudebar_refresh_interval"
-    private static let dataPathKey = "claudebar_data_path"
 
     /// Detected subscription info from Keychain.
     private(set) var detectedSubscriptionType: String = ""
@@ -43,21 +52,17 @@ final class SettingsStore {
 
     init() {
         self.customTokenLimit = Self.defaults.integer(forKey: Self.customTokenLimitKey).nonZero ?? 50_000
-        self.refreshIntervalSeconds = Self.defaults.integer(forKey: Self.refreshIntervalKey).nonZero ?? 30
-        self.dataPath = Self.defaults.string(forKey: Self.dataPathKey)
-            ?? "~/.claude/projects"
 
-        // Try auto-detect from Keychain first, fallback to saved setting
+        // Auto-detect plan from Keychain
         if let creds = KeychainReader.readCredentials() {
             self.detectedSubscriptionType = creds.subscriptionType
             self.detectedRateLimitTier = creds.rateLimitTier
-            NSLog("[ClaudeBar] Keychain: subscriptionType=\(creds.subscriptionType), rateLimitTier=\(creds.rateLimitTier)")
         }
 
         if let detected = KeychainReader.detectPlan() {
             self.plan = detected
             self.planAutoDetected = true
-            NSLog("[ClaudeBar] Auto-detected plan: \(detected.rawValue)")
+            // Plan auto-detected
         } else {
             let planRaw = Self.defaults.string(forKey: Self.planKey) ?? ClaudePlan.pro.rawValue
             self.plan = ClaudePlan(rawValue: planRaw) ?? .pro
@@ -67,8 +72,6 @@ final class SettingsStore {
     private func save() {
         Self.defaults.set(plan.rawValue, forKey: Self.planKey)
         Self.defaults.set(customTokenLimit, forKey: Self.customTokenLimitKey)
-        Self.defaults.set(refreshIntervalSeconds, forKey: Self.refreshIntervalKey)
-        Self.defaults.set(dataPath, forKey: Self.dataPathKey)
     }
 }
 

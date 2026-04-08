@@ -138,48 +138,6 @@ final class StatusItemController: NSObject {
         menu.addItem(item)
     }
 
-    private func addStyledItem(_ menu: NSMenu, text: String,
-                               font: NSFont, color: NSColor = .labelColor) {
-        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(string: text, attributes: [
-            .font: font, .foregroundColor: color,
-        ])
-        menu.addItem(item)
-    }
-
-    /// Compact loading progress bar with label.
-    private func addLoadingBar(_ menu: NSMenu, progress: String) {
-        // Parse "7d: 45/237 files" or "History: 120/3139 files"
-        var percent: Double = 0
-        let parts = progress.components(separatedBy: CharacterSet(charactersIn: ":/"))
-        if parts.count >= 3 {
-            let done = Double(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
-            let total = Double(parts[2].trimmingCharacters(in: .letters).trimmingCharacters(in: .whitespaces)) ?? 1
-            if total > 0 { percent = done / total }
-        }
-
-        let barLen = 20
-        let filled = Int(Double(barLen) * min(percent, 1.0))
-        let empty = barLen - filled
-        let bar = String(repeating: "\u{2589}", count: filled) + String(repeating: "\u{2581}", count: empty)
-
-        let attr = NSMutableAttributedString()
-        attr.append(NSAttributedString(string: "  \(bar) ", attributes: [
-            .font: NSFont.systemFont(ofSize: 9),
-            .foregroundColor: NSColor.systemBlue.withAlphaComponent(0.6),
-        ]))
-        attr.append(NSAttributedString(string: progress, attributes: [
-            .font: NSFont.systemFont(ofSize: 10),
-            .foregroundColor: NSColor.tertiaryLabelColor,
-        ]))
-
-        let item = NSMenuItem(title: progress, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = attr
-        menu.addItem(item)
-    }
-
     private func addDetailItem(_ menu: NSMenu, text: String) {
         let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.isEnabled = false
@@ -261,6 +219,7 @@ final class StatusItemController: NSObject {
         )
         window.title = "ClaudeBar Preferences"
         window.contentView = NSHostingView(rootView: view)
+        window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

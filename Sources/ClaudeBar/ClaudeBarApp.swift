@@ -21,6 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        // Set app icon from bundled resource
+        if let iconURL = Bundle.main.url(forResource: "icon_512", withExtension: "png",
+                                          subdirectory: "AppIcon.appiconset"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
+
         store = UsageStore(settings: settings)
         statusController = StatusItemController(store: store, settings: settings)
         store.startAutoRefresh()
