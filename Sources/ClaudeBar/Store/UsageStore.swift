@@ -2,12 +2,11 @@ import Foundation
 import Observation
 
 /// Central observable state container.
-/// API for authoritative percentages (low frequency), local JSONL for token details (high frequency).
-/// When API is unavailable, estimates percentage from local tokens using a calibration factor.
+/// Uses UsageCache for efficient data access: full scan once, then incremental updates.
 @MainActor
 @Observable
 final class UsageStore {
-    // API data (authoritative, refreshed every 2 min)
+    // API data
     private(set) var fiveHourPercent: Double = 0
     private(set) var fiveHourResetsAt: Date?
     private(set) var sevenDayPercent: Double = 0
@@ -16,7 +15,7 @@ final class UsageStore {
     private(set) var apiError: String?
     private(set) var lastAPIUpdate: Date?
 
-    // Local JSONL data (for token breakdown, refreshed every 30s)
+    // Cached aggregated data (derived from UsageCache, updated on refresh)
     private(set) var entries: [UsageEntry] = []
     private(set) var dailyUsage: [DailyUsage] = []
     private(set) var hourlyUsage: [HourlyUsage] = []
@@ -24,76 +23,100 @@ final class UsageStore {
     private(set) var lastUpdated: Date?
     private(set) var isLoading = false
     private(set) var isLoadingHistory = false
-
-    /// Whether the current 5h percentage is estimated (not from API).
     private(set) var isEstimated = false
+    private(set) var loadingProgress: String = ""
+    private(set) var loadingPercent: Double = 0
 
-    private let reader: UsageReader
+    private let cache: UsageCache
     private let settings: SettingsStore
     private var localTimer: Timer?
-    private var apiTimer: Timer?
 
-    /// Base API interval: 5 minutes. Doubles on each 429, up to 30 min.
-    private static let apiBaseInterval: TimeInterval = 300
-    private var apiCurrentInterval: TimeInterval = 300
-    private static let calibrationKey = "claudebar_cost_per_percent"
+    private static let cal5hKey = "claudebar_cost_per_percent_5h"
+    private static let cal7dKey = "claudebar_cost_per_percent_7d"
+    private static let reset5hKey = "claudebar_last_reset_5h"
+    private static let reset7dKey = "claudebar_last_reset_7d"
 
-    /// Calibration: how much cost (USD) = 1% of the 5h limit.
-    /// Cost naturally weights input/output/model correctly.
-    /// Persisted to UserDefaults so it survives restarts.
-    private var costPerPercent: Double {
-        get { UserDefaults.standard.double(forKey: Self.calibrationKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.calibrationKey) }
+    private var costPerPercent5h: Double {
+        get { UserDefaults.standard.double(forKey: Self.cal5hKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.cal5hKey) }
     }
+    private var costPerPercent7d: Double {
+        get { UserDefaults.standard.double(forKey: Self.cal7dKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.cal7dKey) }
+    }
+    private var savedResetAt5h: Date? {
+        get { UserDefaults.standard.object(forKey: Self.reset5hKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Self.reset5hKey) }
+    }
+    private var savedResetAt7d: Date? {
+        get { UserDefaults.standard.object(forKey: Self.reset7dKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Self.reset7dKey) }
+    }
+
+    private static let window5h: TimeInterval = 5 * 3600
+    private static let window7d: TimeInterval = 7 * 24 * 3600
 
     init(settings: SettingsStore) {
         self.settings = settings
         let path = NSString(string: settings.dataPath).expandingTildeInPath
-        self.reader = UsageReader(dataPath: URL(fileURLWithPath: path))
+        let reader = UsageReader(dataPath: URL(fileURLWithPath: path))
+        self.cache = UsageCache(reader: reader)
+
+        // Restore reset times
+        if let saved = savedResetAt5h {
+            fiveHourResetsAt = Self.projectReset(from: saved, period: Self.window5h)
+        }
+        if let saved = savedResetAt7d {
+            sevenDayResetsAt = Self.projectReset(from: saved, period: Self.window7d)
+        }
     }
 
-    // MARK: - Computed
+    private static func projectReset(from knownReset: Date, period: TimeInterval) -> Date {
+        var next = knownReset
+        while next < Date() { next = next.addingTimeInterval(period) }
+        return next
+    }
 
-    var sessionUsagePercent: Double { fiveHourPercent / 100.0 }
-    var weeklyUsagePercent: Double { sevenDayPercent / 100.0 }
+    // MARK: - Expiry
+
+    private var is5hExpired: Bool {
+        guard let r = fiveHourResetsAt else { return false }; return Date() > r
+    }
+    private var is7dExpired: Bool {
+        guard let r = sevenDayResetsAt else { return false }; return Date() > r
+    }
+
+    var effective5hPercent: Double { is5hExpired && !isEstimated ? 0 : fiveHourPercent }
+    var effective7dPercent: Double { is7dExpired && !isEstimated ? 0 : sevenDayPercent }
+    var sessionUsagePercent: Double { effective5hPercent / 100.0 }
+    var weeklyUsagePercent: Double { effective7dPercent / 100.0 }
 
     var sessionResetIn: TimeInterval? {
-        guard let resetsAt = fiveHourResetsAt else { return nil }
-        let remaining = resetsAt.timeIntervalSinceNow
-        return remaining > 0 ? remaining : nil
+        guard let r = fiveHourResetsAt, Date() < r else { return nil }; return r.timeIntervalSinceNow
+    }
+    var weeklyResetIn: TimeInterval? {
+        guard let r = sevenDayResetsAt, Date() < r else { return nil }; return r.timeIntervalSinceNow
     }
 
-    var weeklyResetIn: TimeInterval? {
-        guard let resetsAt = sevenDayResetsAt else { return nil }
-        let remaining = resetsAt.timeIntervalSinceNow
-        return remaining > 0 ? remaining : nil
-    }
+    // MARK: - Session data (from cached entries)
 
     var currentSessionEntries: [UsageEntry] {
-        let windowStart = Date().addingTimeInterval(-Double(ClaudePlan.sessionWindowHours) * 3600)
-        return entries.filter { $0.timestamp >= windowStart }
-    }
-
-    var currentSessionBillableTokens: Int {
-        currentSessionEntries.reduce(0) { $0 + $1.billableTokens }
+        let start = Date().addingTimeInterval(-Double(ClaudePlan.sessionWindowHours) * 3600)
+        return entries.filter { $0.timestamp >= start }
     }
     var currentSessionMessages: Int { currentSessionEntries.count }
     var currentSessionCost: Double { currentSessionEntries.reduce(0) { $0 + $1.costUSD } }
-
-    /// Cost of only input+output tokens (no cache) — used for calibration.
+    var currentSessionModels: [String] { Array(Set(currentSessionEntries.map(\.model))).sorted() }
     var currentSessionIOCost: Double {
-        currentSessionEntries.reduce(0) { total, entry in
-            total + CostCalculator.calculateCost(
-                model: entry.model,
-                inputTokens: entry.inputTokens,
-                outputTokens: entry.outputTokens,
-                cacheCreationTokens: 0,
-                cacheReadTokens: 0
-            )
-        }
+        currentSessionEntries.reduce(0) { $0 + CostCalculator.calculateCost(
+            model: $1.model, inputTokens: $1.inputTokens, outputTokens: $1.outputTokens,
+            cacheCreationTokens: 0, cacheReadTokens: 0) }
     }
-    var currentSessionModels: [String] {
-        Array(Set(currentSessionEntries.map(\.model))).sorted()
+    var sevenDayIOCost: Double {
+        let start = Date().addingTimeInterval(-7 * 24 * 3600)
+        return entries.filter { $0.timestamp >= start }.reduce(0) { $0 + CostCalculator.calculateCost(
+            model: $1.model, inputTokens: $1.inputTokens, outputTokens: $1.outputTokens,
+            cacheCreationTokens: 0, cacheReadTokens: 0) }
     }
 
     var todayCost: Double { dailyUsage.last?.totalCost ?? 0 }
@@ -101,12 +124,20 @@ final class UsageStore {
 
     var statusText: String {
         if isLoading && lastUpdated == nil && lastAPIUpdate == nil { return "..." }
-        let pct = Int(fiveHourPercent)
         if lastAPIUpdate != nil || isEstimated {
-            let prefix = isEstimated ? "~" : ""
-            return "\(prefix)\(pct)%"
+            return (isEstimated ? "~" : "") + "\(Int(effective5hPercent))%"
         }
         return "—"
+    }
+
+    var dataSourceLabel: String {
+        if let t = lastAPIUpdate {
+            if is5hExpired { return isEstimated ? "est. (reset)" : "API expired" }
+            let s = Int(Date().timeIntervalSince(t))
+            return "API \(s < 60 ? "\(s)s" : "\(s/60)m") ago"
+        }
+        if isEstimated { return "est." }
+        return "no data"
     }
 
     var activeSession: SessionBlock? { nil }
@@ -115,136 +146,156 @@ final class UsageStore {
 
     func startAutoRefresh() {
         refreshAPI()
-        refreshLocal()
-
-        scheduleAPITimer()
+        startFullScan()
 
         localTimer?.invalidate()
         localTimer = Timer.scheduledTimer(
             withTimeInterval: Double(settings.refreshIntervalSeconds), repeats: true
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshLocal() }
+            Task { @MainActor [weak self] in self?.refreshIncremental() }
         }
     }
 
     func stopAutoRefresh() {
-        apiTimer?.invalidate()
-        apiTimer = nil
         localTimer?.invalidate()
         localTimer = nil
     }
 
     func refresh() {
         refreshAPI()
-        refreshLocal()
+        refreshIncremental()
     }
 
-    // MARK: - API Refresh
-
-    private func scheduleAPITimer() {
-        apiTimer?.invalidate()
-        apiTimer = Timer.scheduledTimer(withTimeInterval: apiCurrentInterval, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshAPI()
-                self?.scheduleAPITimer()
-            }
-        }
-    }
+    // MARK: - API
 
     private func refreshAPI() {
         Task {
             if let usage = await UsageAPI.fetchUsage() {
-                let apiPct = usage.fiveHour?.utilization ?? 0
-                self.fiveHourPercent = apiPct
-                self.fiveHourResetsAt = usage.fiveHour?.resetsAt
-                self.sevenDayPercent = usage.sevenDay?.utilization ?? 0
-                self.sevenDayResetsAt = usage.sevenDay?.resetsAt
-                self.extraUsage = usage.extraUsage
-                self.lastAPIUpdate = Date()
-                self.apiError = nil
-                self.isEstimated = false
+                let pct5 = usage.fiveHour?.utilization ?? 0
+                fiveHourPercent = pct5
+                fiveHourResetsAt = usage.fiveHour?.resetsAt
+                let pct7 = usage.sevenDay?.utilization ?? 0
+                sevenDayPercent = pct7
+                sevenDayResetsAt = usage.sevenDay?.resetsAt
+                extraUsage = usage.extraUsage
+                lastAPIUpdate = Date()
+                apiError = nil
+                isEstimated = false
 
-                // Success: reset interval to base
-                self.apiCurrentInterval = Self.apiBaseInterval
+                if let r5 = usage.fiveHour?.resetsAt { savedResetAt5h = r5 }
+                if let r7 = usage.sevenDay?.resetsAt { savedResetAt7d = r7 }
 
                 // Calibrate
-                let ioCost = self.currentSessionIOCost
-                if apiPct > 1 && ioCost > 0.01 {
-                    let newCPP = ioCost / apiPct
-                    self.costPerPercent = newCPP
-                    NSLog("[ClaudeBar] Calibrated: $\(String(format: "%.4f", newCPP))/percent")
-                }
+                let io5 = currentSessionIOCost
+                if pct5 > 1 && io5 > 0.01 { costPerPercent5h = io5 / pct5 }
+                let io7 = sevenDayIOCost
+                if pct7 > 1 && io7 > 0.01 { costPerPercent7d = io7 / pct7 }
 
-                NSLog("[ClaudeBar] API: 5h=\(apiPct)%, 7d=\(self.sevenDayPercent)%")
+                NSLog("[ClaudeBar] API: 5h=\(pct5)%, 7d=\(pct7)%")
             } else {
-                self.apiError = "API unavailable"
-                // Backoff: double interval, max 30 min
-                self.apiCurrentInterval = min(self.apiCurrentInterval * 2, 1800)
-                NSLog("[ClaudeBar] API failed, next try in \(Int(self.apiCurrentInterval))s")
+                apiError = "API unavailable"
+                if is5hExpired, let s = savedResetAt5h { fiveHourResetsAt = Self.projectReset(from: s, period: Self.window5h) }
+                if is7dExpired, let s = savedResetAt7d { sevenDayResetsAt = Self.projectReset(from: s, period: Self.window7d) }
                 estimateFromLocal()
             }
         }
     }
 
-    /// Estimate 5h percentage from local IO cost using calibration factor.
     private func estimateFromLocal() {
-        let cpp = costPerPercent
-        guard cpp > 0 else { return }
-
-        let ioCost = currentSessionIOCost
-        let estimated = ioCost / cpp
-        self.fiveHourPercent = min(estimated, 200) // allow >100% to show overuse
-        self.isEstimated = true
+        if is5hExpired, let s = savedResetAt5h { fiveHourResetsAt = Self.projectReset(from: s, period: Self.window5h) }
+        if is7dExpired, let s = savedResetAt7d { sevenDayResetsAt = Self.projectReset(from: s, period: Self.window7d) }
+        if costPerPercent5h > 0 { fiveHourPercent = min(currentSessionIOCost / costPerPercent5h, 200) }
+        if costPerPercent7d > 0 { sevenDayPercent = min(sevenDayIOCost / costPerPercent7d, 200) }
+        isEstimated = true
     }
 
-    // MARK: - Local JSONL Refresh
+    // MARK: - Full scan (once at startup, populates cache)
 
-    private func refreshLocal() {
+    private func startFullScan() {
+        isLoadingHistory = true
+        loadingPercent = 0
+
+        Task.detached(priority: .background) { [cache = self.cache] in
+            // Progress callback
+            await cache.setProgress { [weak self] done, total in
+                let pct = total > 0 ? Double(done) / Double(total) : 0
+                Task { @MainActor in
+                    self?.loadingPercent = pct
+                    self?.loadingProgress = "\(done)/\(total)"
+                }
+            }
+
+            // Data callback — called progressively as batches are processed
+            await cache.setDataCallback { [weak self] entries, daily, hourly, monthly in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.entries = entries
+                    self.dailyUsage = daily
+                    self.hourlyUsage = hourly
+                    self.monthlyUsage = monthly
+                    self.lastUpdated = Date()
+
+                    if self.isEstimated || self.lastAPIUpdate == nil {
+                        self.estimateFromLocal()
+                    }
+                }
+            }
+
+            await cache.fullScan()
+
+            await MainActor.run { [weak self] in
+                self?.isLoadingHistory = false
+                self?.loadingProgress = ""
+                self?.loadingPercent = 0
+                NSLog("[ClaudeBar] Cache ready: \(self?.dailyUsage.count ?? 0) days")
+            }
+        }
+    }
+
+    // MARK: - Incremental refresh (every 30s, only today changes)
+
+    private func refreshIncremental() {
         guard !isLoading else { return }
         isLoading = true
 
-        Task.detached(priority: .background) { [reader = self.reader] in
-            let recent = await reader.loadEntries(hoursBack: 6)
-            let daily = await reader.buildDailyUsage(from: recent)
+        Task.detached(priority: .background) { [cache = self.cache] in
+            // Only re-scans files modified in last 6h
+            await cache.refreshRecent()
+
+            let entries = await cache.getEntries(hoursBack: 168)
+            let daily = await cache.getDailyUsage()
+            let hourly = await cache.getHourlyUsage(hoursBack: 24)
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.entries = recent
-                let historyDays = self.dailyUsage.filter { d in
-                    !daily.contains(where: { $0.id == d.id })
-                }
-                self.dailyUsage = (historyDays + daily).sorted { $0.date < $1.date }
+                self.entries = entries
+                self.dailyUsage = daily
+                self.hourlyUsage = hourly
                 self.lastUpdated = Date()
                 self.isLoading = false
 
-                // If API is stale, re-estimate
-                if self.isEstimated || self.lastAPIUpdate == nil {
+                if self.isEstimated || self.lastAPIUpdate == nil || self.is5hExpired {
                     self.estimateFromLocal()
                 }
             }
         }
     }
 
-    // MARK: - History (on demand)
+    // MARK: - History (no-op if cache ready, otherwise triggers scan)
 
     func loadHistory() {
-        guard !isLoadingHistory else { return }
-        isLoadingHistory = true
-
-        Task.detached(priority: .background) { [reader = self.reader] in
-            let all = await reader.loadAllEntries()
-            let daily = await reader.buildDailyUsage(from: all)
-            let monthly = await reader.buildMonthlyUsage(from: all)
-
-            let last24h = all.filter { $0.timestamp > Date().addingTimeInterval(-86400) }
-            let hourly = await reader.buildHourlyUsage(from: last24h)
-
-            await MainActor.run { [weak self] in
-                self?.dailyUsage = daily
-                self?.monthlyUsage = monthly
-                self?.hourlyUsage = hourly
-                self?.isLoadingHistory = false
-                NSLog("[ClaudeBar] History: \(daily.count) days, \(monthly.count) months, \(hourly.count) hours")
+        Task {
+            let done = await cache.isFullScanDone
+            if done {
+                // Cache already has everything, just refresh views
+                let daily = await cache.getDailyUsage()
+                let monthly = await cache.getMonthlyUsage()
+                let hourly = await cache.getHourlyUsage(hoursBack: 24)
+                self.dailyUsage = daily
+                self.monthlyUsage = monthly
+                self.hourlyUsage = hourly
+            } else if !isLoadingHistory {
+                startFullScan()
             }
         }
     }

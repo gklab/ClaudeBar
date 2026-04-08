@@ -3,7 +3,9 @@ import Foundation
 /// Reads and parses Claude Code usage data from JSONL files in ~/.claude/projects/.
 /// Supports staged loading: recent first, then weekly, then historical.
 actor UsageReader {
-    private let dataPath: URL
+    let dataPath: URL
+
+    func getDataPath() -> URL { dataPath }
     private var processedHashes: Set<String> = []
     private let isoFormatter: ISO8601DateFormatter
     private let isoFormatterNoFrac: ISO8601DateFormatter
@@ -21,6 +23,13 @@ actor UsageReader {
         self.isoFormatterNoFrac.formatOptions = [.withInternetDateTime]
     }
 
+    /// Progress callback: (filesProcessed, totalFiles).
+    var onProgress: (@Sendable (Int, Int) -> Void)?
+
+    func setProgress(_ callback: @escaping @Sendable (Int, Int) -> Void) {
+        onProgress = callback
+    }
+
     /// Load entries for a specific time window. Files are filtered by mtime.
     func loadEntries(hoursBack: Int) -> [UsageEntry] {
         processedHashes.removeAll()
@@ -29,10 +38,10 @@ actor UsageReader {
         let files = findJSONLFiles(modifiedAfter: cutoff)
         var allEntries: [UsageEntry] = []
 
-        for file in files {
+        for (i, file) in files.enumerated() {
             let entries = processFile(file, cutoff: cutoff)
             allEntries.append(contentsOf: entries)
-            // Throttle between files to keep CPU low
+            onProgress?(i + 1, files.count)
             Thread.sleep(forTimeInterval: 0.05)
         }
 
@@ -97,9 +106,10 @@ actor UsageReader {
         let files = findJSONLFiles(modifiedAfter: veryOld)
         NSLog("[ClaudeBar] Loading all: \(files.count) files")
         var allEntries: [UsageEntry] = []
-        for file in files {
+        for (i, file) in files.enumerated() {
             let entries = processFile(file, cutoff: veryOld)
             allEntries.append(contentsOf: entries)
+            onProgress?(i + 1, files.count)
             Thread.sleep(forTimeInterval: 0.05)
         }
         allEntries.sort { $0.timestamp < $1.timestamp }

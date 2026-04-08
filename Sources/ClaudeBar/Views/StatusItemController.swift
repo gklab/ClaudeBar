@@ -51,12 +51,12 @@ final class StatusItemController: NSObject {
                 .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
             ]))
 
-            if store.apiError != nil {
-                header.append(NSAttributedString(string: "   API offline", attributes: [
-                    .font: NSFont.systemFont(ofSize: 10),
-                    .foregroundColor: NSColor.systemOrange,
-                ]))
-            }
+            // Data source indicator
+            let sourceColor: NSColor = store.apiError != nil ? .systemOrange : .tertiaryLabelColor
+            header.append(NSAttributedString(string: "   \(store.dataSourceLabel)", attributes: [
+                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: sourceColor,
+            ]))
 
             item.attributedTitle = header
             menu.addItem(item)
@@ -65,8 +65,8 @@ final class StatusItemController: NSObject {
 
         // ── 5-Hour Window ──
         addSectionHeader(menu, title: "5-Hour Window")
-        let pct5 = Int(store.fiveHourPercent)
-        let estMark = store.isEstimated ? " (est.)" : ""
+        let pct5 = Int(store.effective5hPercent)
+        let estMark = store.isEstimated ? " ~" : ""
         addBarItem(menu, label: "\(pct5)%\(estMark)", percent: store.sessionUsagePercent)
         if let resetsAt = store.fiveHourResetsAt {
             addDetailItem(menu, text: "Resets \(formatResetDate(resetsAt))")
@@ -92,8 +92,9 @@ final class StatusItemController: NSObject {
 
         // ── 7-Day Window ──
         addSectionHeader(menu, title: "7-Day Window")
-        let pct7 = Int(store.sevenDayPercent)
-        addBarItem(menu, label: "\(pct7)%", percent: store.weeklyUsagePercent)
+        let pct7 = Int(store.effective7dPercent)
+        let est7 = store.isEstimated ? " ~" : ""
+        addBarItem(menu, label: "\(pct7)%\(est7)", percent: store.weeklyUsagePercent)
         if let resetsAt = store.sevenDayResetsAt {
             addDetailItem(menu, text: "Resets \(formatResetDate(resetsAt))")
         }
@@ -107,51 +108,12 @@ final class StatusItemController: NSObject {
             addBarItem(menu, label: "\(fmtCost(spent)) / \(fmtCost(limit))", percent: extra.utilization / 100)
         }
 
-        // ── Footer: Today + Updated ──
-        menu.addItem(NSMenuItem.separator())
-        do {
-            let todayStr: String
-            if let today = store.dailyUsage.last {
-                todayStr = "Today: \(today.messageCount) msgs · \(fmtTok(today.totalTokens)) tokens · ~\(fmtCost(today.totalCost))"
-            } else {
-                todayStr = "Today: no data"
-            }
-            var statusParts: [String] = []
-            if let apiTime = store.lastAPIUpdate {
-                let secs = Int(Date().timeIntervalSince(apiTime))
-                let ago = secs < 60 ? "\(secs)s" : "\(secs / 60)m"
-                statusParts.append("API \(ago) ago")
-            }
-            if store.apiError != nil {
-                statusParts.append("API offline")
-            }
-            let updatedStr = statusParts.isEmpty ? "" : "  · \(statusParts.joined(separator: " · "))"
-
-            let footer = NSMutableAttributedString()
-            footer.append(NSAttributedString(string: "  \(todayStr)", attributes: [
-                .font: NSFont.systemFont(ofSize: 10),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]))
-            footer.append(NSAttributedString(string: updatedStr, attributes: [
-                .font: NSFont.systemFont(ofSize: 10),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ]))
-            let footerItem = NSMenuItem(title: todayStr, action: nil, keyEquivalent: "")
-            footerItem.isEnabled = false
-            footerItem.attributedTitle = footer
-            menu.addItem(footerItem)
-        }
-
         // ── Actions ──
         menu.addItem(NSMenuItem.separator())
 
         let historyItem = NSMenuItem(title: "Daily History...", action: #selector(historyAction), keyEquivalent: "h")
         historyItem.target = self
         menu.addItem(historyItem)
-
-        let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshAction), keyEquivalent: "r")
-        refreshItem.target = self
-        menu.addItem(refreshItem)
 
         let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(preferencesAction), keyEquivalent: ",")
         prefsItem.target = self
@@ -183,6 +145,38 @@ final class StatusItemController: NSObject {
         item.attributedTitle = NSAttributedString(string: text, attributes: [
             .font: font, .foregroundColor: color,
         ])
+        menu.addItem(item)
+    }
+
+    /// Compact loading progress bar with label.
+    private func addLoadingBar(_ menu: NSMenu, progress: String) {
+        // Parse "7d: 45/237 files" or "History: 120/3139 files"
+        var percent: Double = 0
+        let parts = progress.components(separatedBy: CharacterSet(charactersIn: ":/"))
+        if parts.count >= 3 {
+            let done = Double(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            let total = Double(parts[2].trimmingCharacters(in: .letters).trimmingCharacters(in: .whitespaces)) ?? 1
+            if total > 0 { percent = done / total }
+        }
+
+        let barLen = 20
+        let filled = Int(Double(barLen) * min(percent, 1.0))
+        let empty = barLen - filled
+        let bar = String(repeating: "\u{2589}", count: filled) + String(repeating: "\u{2581}", count: empty)
+
+        let attr = NSMutableAttributedString()
+        attr.append(NSAttributedString(string: "  \(bar) ", attributes: [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor.systemBlue.withAlphaComponent(0.6),
+        ]))
+        attr.append(NSAttributedString(string: progress, attributes: [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]))
+
+        let item = NSMenuItem(title: progress, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = attr
         menu.addItem(item)
     }
 
@@ -231,20 +225,23 @@ final class StatusItemController: NSObject {
     @objc private func refreshAction() { store.refresh() }
 
     @objc private func historyAction() {
-        if let existing = historyWindow, existing.isVisible {
+        // Reuse existing window if it still exists
+        if let existing = historyWindow {
+            // Update content in case store changed
+            existing.contentView = NSHostingView(rootView: HistoryView(store: store))
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let view = HistoryView(store: store)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = "ClaudeBar — Daily History"
-        window.contentView = NSHostingView(rootView: view)
+        window.contentView = NSHostingView(rootView: HistoryView(store: store))
+        window.isReleasedWhenClosed = false  // Keep window object alive after close
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -291,7 +288,7 @@ final class StatusItemController: NSObject {
         )
         button.title = " \(store.statusText)"
         button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        button.toolTip = "ClaudeBar — 5h: \(Int(store.fiveHourPercent))%  7d: \(Int(store.sevenDayPercent))%"
+        button.toolTip = "ClaudeBar — 5h: \(Int(store.effective5hPercent))%  7d: \(Int(store.effective7dPercent))%"
     }
 
     // MARK: - Formatting
